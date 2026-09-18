@@ -1,38 +1,51 @@
 package main
 
 import (
-	"bytes"
-	"debug/elf"
-	"ebpf/ebpf"
+	"ebpf/loader"
+	_ "embed"
 	"fmt"
 )
 
 // int fd = syscall(__NR_bpf, BPF_PROG_LOAD, &attr, sizeof(attr));
 
+//go:embed ebpf/program.o
+var Program []byte
+
 func main() {
-	reader := bytes.NewReader(ebpf.Program)
-	elfFile, err := elf.NewFile(reader)
+	// reader := bytes.NewReader(ebpf.Program)
+	// elfFile, err := elf.NewFile(reader)
+	// if err != nil {
+	// 	panic(err.Error())
+	// }
+	//
+	// for _, sec := range elfFile.Sections {
+	// 	fmt.Println("section", sec.Name, "of size", sec.Size)
+	// }
+	//
+	// section := elfFile.Section("tc")
+	// program, err := section.Data()
+	// if err != nil {
+	// 	panic(err.Error())
+	// }
+	//
+	// fmt.Println(program)
+
+	progFd, err := loader.LoadProgram("GPL", Program)
 	if err != nil {
 		panic(err.Error())
 	}
+	fmt.Printf("loaded the program: %d\n", progFd)
 
-	for _, sec := range elfFile.Sections {
-		fmt.Println("section", sec.Name, "of size", sec.Size)
-	}
-
-	section := elfFile.Section("tc")
-	program, err := section.Data()
+	linkFd, err := loader.AttachProgramToInterface(progFd, "lo")
 	if err != nil {
 		panic(err.Error())
 	}
+	fmt.Printf("attached the program: %d\n", linkFd)
 
-	fmt.Println(program)
+	loader.Close(progFd)
+	fmt.Println("closing the program reference")
 
-	fd, err := ebpf.LoadProgram("GPL", program)
-	if err != nil {
-		panic(err.Error())
-	}
-	fmt.Println(fd)
+	select {}
 
 	// syscall.Syscall(syscall.BPF_A)
 	// fmt.Printf("Hello, World, %+v\n", ebpf.Program)
