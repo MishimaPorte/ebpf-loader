@@ -10,6 +10,30 @@
 #include <net/if.h>
 #include <elf.h>
 
+#include "da.h"
+
+#define TEMP_BUF_SIZE 1024 * 1024
+static char __temp_sprintf_buf[TEMP_BUF_SIZE];
+
+#define temp_sprintf(fmt, ...) (snprintf(&__temp_sprintf_buf[0], TEMP_BUF_SIZE, (fmt), __VA_ARGS__), &__temp_sprintf_buf[0])
+
+typedef struct {
+    uint32_t len;
+    uint32_t cap;
+    struct btf_type **items;
+} btf_types_da;
+
+typedef struct {
+    int fd;
+    const char *name;
+} created_map;
+
+typedef struct {
+    uint32_t len;
+    uint32_t cap;
+    created_map *items;
+} btf_created_maps_da;
+
 typedef struct {
     Elf64_Shdr *sec;
     uint32_t offset;
@@ -24,7 +48,6 @@ typedef struct {
     size_t elf_shoff;
     Elf64_Ehdr *elf_header;
 
-
     Elf64_Shdr *str_sec;
     void *strings;
 
@@ -33,6 +56,8 @@ typedef struct {
 
     Elf64_Shdr *btf_sec;
     void *btf;
+    btf_types_da types;
+    btf_created_maps_da created_maps;
 
     Elf64_Shdr *btf_ext_sec;
     void *btf_ext;
@@ -53,7 +78,19 @@ typedef struct {
     void *relocated_program;
 } Bpf_Object;
 
+#define get_btf_type(obj, type_id) ((obj)->types.items[(type_id) - 1])
+
 Elf64_Shdr *__get_section(Bpf_Object *obj, uint32_t index);
+
+created_map *__find_map(Bpf_Object *obj,
+                        const char *map_name)
+{
+    for (uint32_t i = 0; i < obj->created_maps.len; ++i)
+        if (strcmp(map_name, obj->created_maps.items[i].name) == 0)
+            return &obj->created_maps.items[i];
+
+    return NULL;
+};
 
 #define R_BPF_64_64       1
 #define R_BPF_64_ABS64    2
@@ -208,7 +245,6 @@ const char *__collect_section_definitions(Bpf_Object *obj)
         }
     }
 
-
     for (uint32_t i = 0; i < obj->text_count; ++i) {
         obj->text[i].offset = obj->overall_text_size;
         obj->overall_text_size += obj->text[i].sec->sh_size/8;
@@ -264,6 +300,7 @@ const char *__process_relocation_R_BPF_64_64(Bpf_Object *obj,
                                              Elf64_Sym *sym,
                                              Elf64_Rel *rel)
 {
+    Elf64_Shdr *sym_sec = __get_section(obj, sym->st_shndx);
     Program_Text *source = __find_text(obj, sec->sh_info);
     if (!source) return "unknown source section";
     printf("section index: %d\n", sym->st_shndx);
@@ -271,24 +308,35 @@ const char *__process_relocation_R_BPF_64_64(Bpf_Object *obj,
     struct bpf_insn *ins = obj->elf + source->sec->sh_offset + rel->r_offset;
     uint32_t addend = ins[0].imm;
 
-    int map_fd = obj->sections_mapped[sym->st_shndx];
-    if (!map_fd) {
-        Elf64_Shdr *section = __get_section(obj, sym->st_shndx);
-        void *data = obj->elf + section->sh_offset;
-        map_fd = __create_rodata_map(data, section->sh_size);
-        if (map_fd == -1) {
-            return "could not map a data section";
+    if (sym_sec == obj->maps_sec) {
+        int map_fd = 0;
+        const char *sym_name = obj->strings + sym->st_name;
+        printf("handle map creation: %s\n", sym_name);
+
+        created_map *map = __find_map(obj, sym_name);
+        if (!map) return temp_sprintf("unknown map referenced in relocation: %s", sym_name);
+
+        ins[0].src_reg = BPF_PSEUDO_MAP_FD;
+        ins[0].imm = map->fd;
+        ins[1].imm = 0;
+    } else {
+        int map_fd = obj->sections_mapped[sym->st_shndx];
+        if (!map_fd) {
+            Elf64_Shdr *section = __get_section(obj, sym->st_shndx);
+            void *data = obj->elf + section->sh_offset;
+            map_fd = __create_rodata_map(data, section->sh_size);
+            if (map_fd == -1) {
+                return "could not map a data section";
+            }
+            printf("mapped section to fd: %d\n", map_fd);
+            obj->sections_mapped[sym->st_shndx] = map_fd;
         }
-        printf("mapped section to fd: %d\n", map_fd);
-        obj->sections_mapped[sym->st_shndx] = map_fd;
+
+        ins[0].src_reg = BPF_PSEUDO_MAP_VALUE;
+        ins[0].imm = map_fd;
+        ins[1].imm = sym->st_value + addend;
     }
 
-    ins[0].src_reg = BPF_PSEUDO_MAP_VALUE;
-    ins[0].imm = map_fd;
-    ins[1].imm = sym->st_value + addend;
-
-    printf("addend: %d\n", addend);
-    printf("symbol: %s, section: %012u, value: %012u, size: %d\n", obj->strings + sym->st_name, sym->st_shndx, sym->st_value, sym->st_size);
     return NULL;
 }
 
@@ -329,7 +377,6 @@ const char *__process_relocation_section(Bpf_Object *obj,
         uint32_t rel_type = (uint32_t)rel->r_info;
         uint32_t sym_index = (uint32_t)(rel->r_info>>32);
         Elf64_Sym *sym = &obj->symtab[sym_index];
-        Elf64_Shdr *sym_sec = __get_section(obj, sym->st_shndx);
 
 
         printf("relocation: offset: %012zu, type: %u, sym: %u\n", rel->r_offset, rel_type, sym_index);
@@ -371,15 +418,164 @@ const char *__process_relocations(Bpf_Object *obj)
     return NULL;
 }
 
-const char *__process_maps(Bpf_Object *obj)
+static const char *__btf_kind_name(int kind)
 {
-    if (!obj->maps) return NULL;
-    struct btf_header *header = obj->maps;
-    printf("magic: %d\n", header->magic);
-    printf("amount of maps: %d\n", header->hdr_len);
-    printf("amount of types: %d\n", header->type_len);
-    printf("amount of strings: %d\n", header->str_len);
-    exit(1);
+    switch (kind) {
+    case BTF_KIND_INT:        return "BTF_KIND_INT";
+    case BTF_KIND_ARRAY:      return "BTF_KIND_ARRAY";
+    case BTF_KIND_STRUCT:     return "BTF_KIND_STRUCT";
+    case BTF_KIND_UNION:      return "BTF_KIND_UNION";
+    case BTF_KIND_ENUM:       return "BTF_KIND_ENUM";
+    case BTF_KIND_ENUM64:     return "BTF_KIND_ENUM64";
+    case BTF_KIND_FUNC_PROTO: return "BTF_KIND_FUNC_PROTO";
+    case BTF_KIND_VAR:        return "BTF_KIND_VAR";
+    case BTF_KIND_DATASEC:    return "BTF_KIND_DATASEC";
+    case BTF_KIND_DECL_TAG:   return "BTF_KIND_DECL_TAG";
+    case BTF_KIND_PTR:        return "BTF_KIND_PTR";
+    case BTF_KIND_FWD:        return "BTF_KIND_FWD";
+    case BTF_KIND_TYPEDEF:    return "BTF_KIND_TYPEDEF";
+    case BTF_KIND_VOLATILE:   return "BTF_KIND_VOLATILE";
+    case BTF_KIND_CONST:      return "BTF_KIND_CONST";
+    case BTF_KIND_RESTRICT:   return "BTF_KIND_RESTRICT";
+    case BTF_KIND_FUNC:       return "BTF_KIND_FUNC";
+    case BTF_KIND_FLOAT:      return "BTF_KIND_FLOAT";
+    case BTF_KIND_TYPE_TAG:   return "BTF_KIND_TYPE_TAG";
+    default:                  return "unsupported kind";
+    }
+}
+
+static size_t __btf_record_size(const struct btf_type *t)
+{
+    size_t n = BTF_INFO_VLEN(t->info);
+
+    switch (BTF_INFO_KIND(t->info)) {
+    case BTF_KIND_INT:        return sizeof *t + sizeof(__u32);
+    case BTF_KIND_ARRAY:      return sizeof *t + sizeof(struct btf_array);
+
+    case BTF_KIND_STRUCT:
+    case BTF_KIND_UNION:      return sizeof *t + n * sizeof(struct btf_member);
+
+    case BTF_KIND_ENUM:       return sizeof *t + n * sizeof(struct btf_enum);
+    case BTF_KIND_ENUM64:     return sizeof *t + n * sizeof(struct btf_enum64);
+    case BTF_KIND_FUNC_PROTO: return sizeof *t + n * sizeof(struct btf_param);
+    case BTF_KIND_VAR:        return sizeof *t + sizeof(struct btf_var);
+    case BTF_KIND_DATASEC:    return sizeof *t + n * sizeof(struct btf_var_secinfo);
+    case BTF_KIND_DECL_TAG:   return sizeof *t + sizeof(struct btf_decl_tag);
+
+    case BTF_KIND_PTR:
+    case BTF_KIND_FWD:
+    case BTF_KIND_TYPEDEF:
+    case BTF_KIND_VOLATILE:
+    case BTF_KIND_CONST:
+    case BTF_KIND_RESTRICT:
+    case BTF_KIND_FUNC:
+    case BTF_KIND_FLOAT:
+    case BTF_KIND_TYPE_TAG:   return sizeof(*t);
+    default:                  return 0; /* unsupported kind */
+    }
+}
+
+const char *__process_maps_datasec(Bpf_Object *obj,
+                                   struct btf_type *t)
+{
+    obj->created_maps.len = 0;
+    obj->created_maps.cap = 10;
+    obj->created_maps.items = malloc(10 * sizeof *obj->created_maps.items);
+    struct btf_header *header = obj->btf;
+    void *strings = obj->btf + header->hdr_len + header->str_off;
+
+    size_t var_count = BTF_INFO_VLEN(t->info);
+    struct btf_var_secinfo *secinfos = (void*)t + sizeof *t;
+    for (size_t i = 0; i < var_count; ++i) {
+        struct btf_var_secinfo *s = secinfos + i;
+        struct btf_type *var = get_btf_type(obj, s->type);
+        struct btf_type *map_type = get_btf_type(obj, var->type);
+
+
+        size_t member_count = BTF_INFO_VLEN(map_type->info);
+        const char *map_name = strings + var->name_off;
+        struct btf_member *members = (struct btf_member *) (map_type+1);
+
+        printf("map definition (%d): %s of name '%s'\n", s->offset, __btf_kind_name(BTF_INFO_KIND(map_type->info)), strings + map_type->name_off);
+
+        uint32_t map_t = 0;
+        uint32_t max_elems = 0;
+        uint32_t k_size = 0;
+        uint32_t v_size = 0;
+        for (size_t i = 0; i < member_count; ++i) {
+            struct btf_member *f = members + i;
+
+            const char *f_name = strings + f->name_off;
+            struct btf_type *f_type_ptr = get_btf_type(obj, f->type);
+            struct btf_type *f_type = get_btf_type(obj, f_type_ptr->type);
+            if (strcmp("type", f_name) == 0) {
+                map_t = ((struct btf_array*)(f_type + 1))->nelems;
+            } else if (strcmp("key", f_name) == 0) {
+                k_size = f_type->size;
+            } else if (strcmp("value", f_name) == 0) {
+                v_size = f_type->size;
+            } else if (strcmp("max_entries", f_name) == 0) {
+                max_elems = ((struct btf_array*)(f_type + 1))->nelems;
+            } else {
+                return temp_sprintf("unsupported map definition field: %s\n", f_name);
+                exit(1);
+            }
+            printf("map field (%d): %s of name '%s'\n", i, __btf_kind_name(BTF_INFO_KIND(f_type->info)), f_name);
+        }
+
+        union bpf_attr attr_create = {0};
+        attr_create.map_type = map_t;
+        attr_create.key_size = k_size;
+        attr_create.value_size = v_size;
+        attr_create.max_entries = max_elems;
+        int map_fd = syscall(__NR_bpf, BPF_MAP_CREATE, &attr_create, sizeof attr_create);
+
+        da_append(&obj->created_maps, ((created_map) {
+            .fd = map_fd,
+            .name = map_name,
+        }));
+
+        printf("created map of fd %d for variable %s\n", map_fd, map_name);
+    }
+
+    return NULL;
+}
+
+const char *__process_btf(Bpf_Object *obj)
+{
+    if (!obj->maps || !obj->btf) return NULL;
+
+    struct btf_header *header = obj->btf;
+    if (header->magic != 0xeB9F) return "btf section magic is not 0xeB9F";
+
+    void *btf_types = obj->btf + header->hdr_len + header->type_off;
+    void *btf_strings = obj->btf + header->hdr_len + header->str_off;
+
+    obj->types = (btf_types_da) {
+        .len = 0,
+        .cap = 10,
+        .items = malloc(sizeof *obj->types.items * 10),
+    };
+    
+    for (uint32_t cursor = 0; cursor < header->type_len;) {
+        struct btf_type *t = btf_types + cursor;
+        cursor += __btf_record_size(t);
+        da_append(&obj->types, t);
+    }
+
+    for (uint32_t i = 0; i < obj->types.len; ++i) {
+        struct btf_type *t = obj->types.items[i];
+        switch (BTF_INFO_KIND(t->info)) {
+            // get the datasections
+            case BTF_KIND_DATASEC:
+                const char *datasec_name = btf_strings + t->name_off;
+                printf("found datasec '%s'\n", datasec_name);
+                if (strcmp(".maps", datasec_name) == 0) {
+                    const char *err = __process_maps_datasec(obj, t);
+                    if (err) return err;
+                }
+        }
+    }
 
     return NULL;
 }
@@ -428,7 +624,7 @@ const char *loader_link_program(void *elf_file,
     const char *err = NULL;
     if (err = __check_elf_header(&obj))              return err;
     if (err = __collect_section_definitions(&obj))   return err;
-    // if (err = __process_maps(&obj))                  return err;
+    if (err = __process_btf(&obj))                  return err;
     if (err = __process_relocations(&obj))           return err;
     if (err = __concatenate_relocated_program(&obj)) return err;
 
