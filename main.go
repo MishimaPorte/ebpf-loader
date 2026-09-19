@@ -9,7 +9,7 @@ import (
 // int fd = syscall(__NR_bpf, BPF_PROG_LOAD, &attr, sizeof(attr));
 
 //go:embed ebpf/program.o
-var Program []byte
+var Object []byte
 
 func main() {
 	// reader := bytes.NewReader(ebpf.Program)
@@ -30,7 +30,7 @@ func main() {
 	//
 	// fmt.Println(program)
 
-	progFd, err := loader.LoadProgram("GPL", Program)
+	progFd, err := loader.LoadProgram("GPL", Object)
 	if err != nil {
 		panic(err.Error())
 	}

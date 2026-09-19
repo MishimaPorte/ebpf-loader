@@ -33,7 +33,6 @@ func LoadProgram(license string, elfFile []byte) (ProgramFd, error) {
 		cErrLen := C.strlen(cErr)
 		return 0, fmt.Errorf("could not link the program: %s (%s)", unsafe.String((*byte)(unsafe.Pointer(cErr)), int(cErrLen)), getLastError())
 	}
-	fmt.Println(program, programSize)
 
 	fd := C.loader_load_bpf_program(cstr, program, programSize)
 	if fd == -1 {
