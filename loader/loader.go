@@ -2,7 +2,9 @@
 package loader
 
 import (
+	"encoding/binary"
 	"fmt"
+	"runtime"
 	"unsafe"
 )
 
@@ -16,7 +18,60 @@ import "C"
 type ProgramFd int
 type LinkFd int
 
-func LoadProgram(license string, elfFile []byte) (ProgramFd, error) {
+type Override struct {
+	c C.global_override
+}
+
+func OverrideInt(name string, i int) Override {
+	override := C.global_override{
+		name:      (*C.char)(unsafe.Pointer(unsafe.StringData(name))),
+		name_size: C.uint32_t(len(name)),
+		kind:      2,
+	}
+	binary.NativeEndian.PutUint32(override.value[:], uint32(i))
+	return Override{override}
+}
+
+func OverrideString(name string, val string) Override {
+	override := C.global_override{
+		name:      (*C.char)(unsafe.Pointer(unsafe.StringData(name))),
+		name_size: C.uint32_t(len(name)),
+		kind:      1,
+	}
+	cstr := C.CString(val)
+	binary.NativeEndian.PutUint64(override.value[:], uint64(uintptr(unsafe.Pointer(cstr))))
+	return Override{override}
+}
+
+func OverrideBool(name string, val bool) Override {
+	override := C.global_override{
+		name:      (*C.char)(unsafe.Pointer(unsafe.StringData(name))),
+		name_size: C.uint32_t(len(name)),
+		kind:      3,
+	}
+	if val {
+		override.value[0] = 1
+	} else {
+		override.value[0] = 0
+	}
+	return Override{override}
+}
+
+func OverrideMemory(name string, val []byte) Override {
+	override := C.global_override{
+		name:      (*C.char)(unsafe.Pointer(unsafe.StringData(name))),
+		name_size: C.uint32_t(len(name)),
+		kind:      4,
+	}
+	memory := C.malloc(C.size_t(len(val)))
+	copy(unsafe.Slice((*byte)(unsafe.Pointer(memory)), len(val)), val)
+
+	binary.NativeEndian.PutUint64(override.value[:], uint64(uintptr(unsafe.Pointer(memory))))
+	binary.NativeEndian.PutUint64(override.value[8:], uint64(len(val)))
+	return Override{override}
+}
+
+func LoadProgram(license string, elfFile []byte, overrides ...Override) (ProgramFd, error) {
 	sectionCstr := C.CString("tc")
 	defer C.free(unsafe.Pointer(sectionCstr))
 
@@ -28,11 +83,15 @@ func LoadProgram(license string, elfFile []byte) (ProgramFd, error) {
 
 	var program unsafe.Pointer
 	var programSize C.uint32_t
-	cErr := C.loader_link_program(unsafe.Pointer(elfFileContent), C.size_t(elfFileContentSize), sectionCstr, &program, &programSize)
+	var coverrides = (*C.global_override)(unsafe.Pointer(unsafe.SliceData(overrides)))
+
+	cErr := C.loader_link_program(unsafe.Pointer(elfFileContent), C.size_t(elfFileContentSize), sectionCstr, &program, &programSize, coverrides, C.size_t(len(overrides)))
 	if cErr != nil {
 		cErrLen := C.strlen(cErr)
 		return 0, fmt.Errorf("could not link the program: %s (%s)", unsafe.String((*byte)(unsafe.Pointer(cErr)), int(cErrLen)), getLastError())
 	}
+
+	runtime.KeepAlive(overrides)
 
 	fd := C.loader_load_bpf_program(cstr, program, programSize)
 	if fd == -1 {

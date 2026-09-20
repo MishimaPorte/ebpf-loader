@@ -9,28 +9,14 @@ import (
 // int fd = syscall(__NR_bpf, BPF_PROG_LOAD, &attr, sizeof(attr));
 
 //go:embed ebpf/program.o
-var Object []byte
+var ObjectFile []byte
 
 func main() {
-	// reader := bytes.NewReader(ebpf.Program)
-	// elfFile, err := elf.NewFile(reader)
-	// if err != nil {
-	// 	panic(err.Error())
-	// }
-	//
-	// for _, sec := range elfFile.Sections {
-	// 	fmt.Println("section", sec.Name, "of size", sec.Size)
-	// }
-	//
-	// section := elfFile.Section("tc")
-	// program, err := section.Data()
-	// if err != nil {
-	// 	panic(err.Error())
-	// }
-	//
-	// fmt.Println(program)
-
-	progFd, err := loader.LoadProgram("GPL", Object)
+	progFd, err := loader.LoadProgram(
+		"GPL", ObjectFile,
+		loader.OverrideInt("print_value", 10),
+		loader.OverrideString("print_string", "kek"),
+	)
 	if err != nil {
 		panic(err.Error())
 	}

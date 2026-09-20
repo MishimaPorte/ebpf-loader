@@ -11,6 +11,7 @@
 #include <elf.h>
 
 #include "da.h"
+#include "loader.h"
 
 #define TEMP_BUF_SIZE 1024 * 1024
 static char __temp_sprintf_buf[TEMP_BUF_SIZE];
@@ -40,6 +41,7 @@ typedef struct {
     uint32_t real_index;
 } Program_Text;
 
+
 typedef struct {
     const char *program_section;
 
@@ -57,6 +59,7 @@ typedef struct {
     Elf64_Shdr *btf_sec;
     void *btf;
     btf_types_da types;
+    uint32_t *type_sizes;
     btf_created_maps_da created_maps;
 
     Elf64_Shdr *btf_ext_sec;
@@ -76,6 +79,9 @@ typedef struct {
     uint32_t *sections_mapped;
 
     void *relocated_program;
+
+    global_override *overrides;
+    size_t overrides_size;
 } Bpf_Object;
 
 #define get_btf_type(obj, type_id) ((obj)->types.items[(type_id) - 1])
@@ -220,7 +226,59 @@ const char *__collect_section_definitions(Bpf_Object *obj)
                 return "multiple SHT_SYMTAB sections are not supported (yet)";
             };
             obj->symtab = obj->elf + sec->sh_offset;
-            obj->sym_count = sec->sh_size / sizeof (*obj->symtab);
+            obj->sym_count = sec->sh_size / sizeof *obj->symtab;
+
+            for (size_t i = 0; i < obj->sym_count; ++i) {
+                Elf64_Sym *sym = obj->symtab + i;
+                const char *sym_name = obj->strings + sym->st_name;
+                if (sym->st_shndx >= 0xff00 || !sym->st_shndx) continue;
+
+                Elf64_Shdr *sec = __get_section(obj, sym->st_shndx);
+                const char *sec_name = obj->strings + sec->sh_name;
+
+                printf("sym (%zu in %s, %zu): %s\n", sym->st_value, sec_name, sym->st_size, obj->strings + sym->st_name);
+
+                if (strcmp(".data", sec_name) == 0 || strcmp(".rodata", sec_name) == 0) {
+                    for (size_t z = 0; z < obj->overrides_size; ++z) {
+                        if (strncmp(obj->overrides[z].name, sym_name, obj->overrides[z].name_size) == 0) {
+                            void *place = obj->elf + sec->sh_offset + sym->st_value;
+                            switch (obj->overrides[z].kind) {
+                                case ok_str:
+                                    size_t str_len = strlen(obj->overrides[z].value.string);
+                                    if (str_len > sym->st_size - 1) {
+                                        return temp_sprintf("not enough space for overriding string: %.*s", obj->overrides[z].name_size, obj->overrides[z].name);
+                                    }
+                                    memcpy(place, obj->overrides[z].value.string, str_len);
+                                    *(char *)(place + str_len) = 0;
+                                    break;
+                                case ok_int:
+                                    if (sym->st_size != 4) {
+                                        return temp_sprintf("not enough space for overriding integer: %.*s", obj->overrides[z].name_size, obj->overrides[z].name);
+                                    }
+                                    memcpy(place, &obj->overrides[z].value.integer, sizeof (int));
+                                    break;
+                                case ok_bool:
+                                    if (sym->st_size < 1) {
+                                        return temp_sprintf("not enough space for overriding boolean: %.*s", obj->overrides[z].name_size, obj->overrides[z].name);
+                                    }
+                                    *(bool *)place = obj->overrides[z].value.boolean;
+                                    break;
+                                case ok_mem:
+                                    if (sym->st_size > obj->overrides[z].value.memory.size) {
+                                        return temp_sprintf("not enough space for overriding memory blob: %.*s", obj->overrides[z].name_size, obj->overrides[z].name);
+                                    }
+                                    memcpy(place, obj->overrides[z].value.memory.data, obj->overrides[z].value.memory.size);
+                                    break;
+                                default: 
+                                    return temp_sprintf("unknown override kind encountered: %d", obj->overrides[z].kind);
+                            }
+                            
+                            break;
+                        }
+                    }
+                }
+            }
+
         } else if (sec->sh_type == SHT_REL) {
             Elf64_Shdr *relocated = __get_section(obj, sec->sh_info);
             const char *relocated_name = obj->strings + relocated->sh_name;
@@ -291,7 +349,9 @@ const char *__process_relocation_R_BPF_64_ABS64(Bpf_Object *obj,
         printf("mapped section to fd: %d\n", map_fd);
         obj->sections_mapped[sym->st_shndx] = map_fd;
     }
-    memcpy(sec_data + rel->r_offset, &sym->st_value, sizeof sym->st_value);
+    void *target = obj->elf + relocated->sh_offset + rel->r_offset;
+    uint64_t value = *(uint64_t*)target + sym->st_value;
+    memcpy(target, &value, sizeof value);
     return NULL;
 }
 const char *__process_relocation_R_BPF_64_64(Bpf_Object *obj,
@@ -379,7 +439,7 @@ const char *__process_relocation_section(Bpf_Object *obj,
         Elf64_Sym *sym = &obj->symtab[sym_index];
 
 
-        printf("relocation: offset: %012zu, type: %u, sym: %u\n", rel->r_offset, rel_type, sym_index);
+        printf("relocation: offset: %012zu, type: %u, sym: %u, sym_value: %d\n", rel->r_offset, rel_type, sym_index, sym->st_value);
         switch (rel_type) {
             case R_BPF_64_32: // used for functions or something
                 __process_relocation_R_BPF_64_32(obj, sec, relocated, sym, rel);
@@ -388,8 +448,7 @@ const char *__process_relocation_section(Bpf_Object *obj,
                 __process_relocation_R_BPF_64_64(obj, sec, relocated, sym, rel);
                 break;
             case R_BPF_64_ABS64:
-                printf("unknown relocation: R_BPF_64_ABS64");
-                exit(1);
+                __process_relocation_R_BPF_64_ABS64(obj, sec, relocated, sym, rel);
                 break;
             case R_BPF_64_ABS32:
                 printf("unknown relocation: R_BPF_64_ABS32");
@@ -475,6 +534,26 @@ static size_t __btf_record_size(const struct btf_type *t)
     }
 }
 
+uint32_t __btf_type_size(Bpf_Object *obj,
+                            uint32_t type_id)
+{
+    if (obj->type_sizes[type_id-1]) return obj->type_sizes[type_id-1];
+    struct btf_type *t = get_btf_type(obj, type_id);
+
+    switch (BTF_INFO_KIND(t->info)) {
+        case BTF_KIND_INT: case BTF_KIND_ENUM: case BTF_KIND_STRUCT:
+        case BTF_KIND_UNION: case BTF_KIND_DATASEC: case BTF_KIND_ENUM64:
+            return t->size;
+        case BTF_KIND_PTR:
+            return sizeof (void*);
+        default:
+            printf("PANIC: unreachable type size required: %s\n", __btf_kind_name(BTF_INFO_KIND(t->info)));
+            exit(1);
+    }
+
+    assert(0 && "unreachable");
+}
+
 const char *__process_maps_datasec(Bpf_Object *obj,
                                    struct btf_type *t)
 {
@@ -511,9 +590,9 @@ const char *__process_maps_datasec(Bpf_Object *obj,
             if (strcmp("type", f_name) == 0) {
                 map_t = ((struct btf_array*)(f_type + 1))->nelems;
             } else if (strcmp("key", f_name) == 0) {
-                k_size = f_type->size;
+                k_size = __btf_type_size(obj, f_type_ptr->type);
             } else if (strcmp("value", f_name) == 0) {
-                v_size = f_type->size;
+                v_size = __btf_type_size(obj, f_type_ptr->type);
             } else if (strcmp("max_entries", f_name) == 0) {
                 max_elems = ((struct btf_array*)(f_type + 1))->nelems;
             } else {
@@ -563,6 +642,9 @@ const char *__process_btf(Bpf_Object *obj)
         da_append(&obj->types, t);
     }
 
+    obj->type_sizes = malloc(obj->types.len * sizeof *obj->type_sizes);
+    memset(obj->type_sizes, 0, obj->types.len * sizeof *obj->type_sizes);
+
     for (uint32_t i = 0; i < obj->types.len; ++i) {
         struct btf_type *t = obj->types.items[i];
         switch (BTF_INFO_KIND(t->info)) {
@@ -596,7 +678,9 @@ const char *loader_link_program(void *elf_file,
                                 size_t file_size,
                                 const char *program_section,
                                 void **out_program,
-                                uint32_t *out_program_size)
+                                uint32_t *out_program_size,
+                                global_override *overrides,
+                                size_t overrides_size)
 {
 
     Elf64_Ehdr *elf_header = elf_file;
@@ -617,6 +701,8 @@ const char *loader_link_program(void *elf_file,
         .sections_mapped = alloca(sizeof *obj.sections_mapped * elf_header->e_shnum),
         .rel = alloca(sizeof *obj.rel * elf_header->e_shnum),
         .rel_count = 0,
+        .overrides = overrides,
+        .overrides_size = overrides_size
     };
     obj.strings = obj.elf + obj.str_sec->sh_offset;
     memset(obj.sections_mapped, 0, sizeof *obj.sections_mapped * elf_header->e_shnum);

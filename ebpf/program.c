@@ -6,7 +6,6 @@
 #include <bpf/bpf_helpers.h>
 
 __attribute__((noinline))
- // __attribute__((section("sec2")))
 void print_thing(int len) {
     bpf_printk("Got a Packet: length is %d!\n", len);
     return;
@@ -15,7 +14,6 @@ void print_thing(int len) {
 volatile int a = 100;
 
 __attribute__((noinline))
- // __attribute__((section("sec1")))
 void aboba() {
     bpf_printk("aboba\n");
     a = 101;
@@ -29,6 +27,9 @@ struct {
     __uint(max_entries, 16);
 } icmpcnt SEC(".maps");
 
+const volatile int print_value = 100;
+const volatile char print_string[] = "auauaufffauf";
+
 SEC("tc")
 int hook(struct __sk_buff* skb) {
     print_thing(skb->len);
@@ -36,7 +37,7 @@ int hook(struct __sk_buff* skb) {
 
     int key = 0;
     int *value = bpf_map_lookup_elem(&icmpcnt, &key);
-    bpf_printk("ok %d (%d): %d\n", a, *value, bpf_get_current_cgroup_id());
+    bpf_printk("ok %d (pv: %d, ps: %s) (%d): %d\n", a, print_value, print_string, *value, bpf_get_current_cgroup_id());
 
     return TC_ACT_OK;
 }
