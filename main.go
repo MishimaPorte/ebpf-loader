@@ -12,6 +12,8 @@ import (
 var ObjectFile []byte
 
 func main() {
+
+
 	progFd, err := loader.LoadProgram(
 		"GPL", ObjectFile,
 		loader.OverrideInt("print_value", 10),
