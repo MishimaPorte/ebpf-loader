@@ -1,9 +1,10 @@
 package main
 
 import (
-	"ebpf/loader"
 	_ "embed"
 	"fmt"
+
+	"github.com/MishimaPorte/ebpf-loader/loader"
 )
 
 // int fd = syscall(__NR_bpf, BPF_PROG_LOAD, &attr, sizeof(attr));
@@ -12,7 +13,6 @@ import (
 var ObjectFile []byte
 
 func main() {
-
 
 	progFd, err := loader.LoadProgram(
 		"GPL", ObjectFile,
