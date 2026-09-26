@@ -71,6 +71,16 @@ func OverrideMemory(name string, val []byte) Override {
 	return Override{override}
 }
 
+func OverrideMap(name string, mapFd int) Override {
+	override := C.global_override{
+		name:      (*C.char)(unsafe.Pointer(unsafe.StringData(name))),
+		name_size: C.uint32_t(len(name)),
+		kind:      5,
+	}
+	binary.NativeEndian.PutUint32(override.value[:], uint32(mapFd))
+	return Override{override}
+}
+
 func LoadProgram(license string, elfFile []byte, overrides ...Override) (ProgramFd, error) {
 	sectionCstr := C.CString("tc")
 	defer C.free(unsafe.Pointer(sectionCstr))
