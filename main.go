@@ -28,7 +28,7 @@ func main() {
 	}
 	fmt.Printf("loaded the program: %d\n", progFd)
 
-	linkFd, err := loader.AttachProgramToInterface(progFd, "lo")
+	linkFd, err := loader.AttachProgramToInterface(progFd, "lo", C.BPF_TCX_INGRESS)
 	if err != nil {
 		panic(err.Error())
 	}

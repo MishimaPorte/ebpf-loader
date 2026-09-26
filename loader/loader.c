@@ -129,7 +129,8 @@ int loader_load_bpf_program(const char *license,
 }
 
 int loader_attach_program(int program_fd,
-                          const char *interface_name)
+                          const char *interface_name,
+                          int attach_type)
 {
     unsigned int ifindex = if_nametoindex(interface_name);
     if (ifindex == 0) return -1;
@@ -137,7 +138,7 @@ int loader_attach_program(int program_fd,
     union bpf_attr attr = {0};
     attr.link_create.prog_fd        = program_fd;
     attr.link_create.target_ifindex = ifindex;
-    attr.link_create.attach_type    = BPF_TCX_INGRESS;
+    attr.link_create.attach_type    = attach_type;
     
     return syscall(__NR_bpf, BPF_LINK_CREATE, &attr, sizeof attr);
 }

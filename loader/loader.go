@@ -111,11 +111,11 @@ func LoadProgram(license string, elfFile []byte, programType int, overrides ...O
 	return ProgramFd(fd), nil
 }
 
-func AttachProgramToInterface(progFd ProgramFd, interfaceName string) (LinkFd, error) {
+func AttachProgramToInterface(progFd ProgramFd, interfaceName string, attachType int) (LinkFd, error) {
 	cstr := C.CString(interfaceName)
 	defer C.free(unsafe.Pointer(cstr))
 
-	link := C.loader_attach_program(C.int(progFd), cstr)
+	link := C.loader_attach_program(C.int(progFd), cstr, C.int(attachType))
 	if link == -1 {
 		return 0, fmt.Errorf("bad ebpf program, could not attach: %s", getLastError())
 	}

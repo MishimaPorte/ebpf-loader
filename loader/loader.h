@@ -31,7 +31,8 @@ int loader_load_bpf_program(const char *license,
                             int prog_type);
 
 int loader_attach_program(int program_fd,
-                          const char *interface_name);
+                          const char *interface_name,
+                          int attach_type);
 
 const char *loader_last_error();
 const char *loader_link_program(void *elf_file,
