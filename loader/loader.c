@@ -192,6 +192,17 @@ const char *__check_elf_header(Bpf_Object *obj)
     return NULL;
 }
 
+const char *__collect_map_overrides(Bpf_Object *obj)
+{
+    for (size_t z = 0; z < obj->overrides_size; ++z)
+        if (obj->overrides[z].kind == ok_map)
+            da_append(&obj->created_maps, ((created_map) {
+                .fd = obj->overrides[z].value.map_fd,
+                .name = strndup(obj->overrides[z].name, obj->overrides[z].name_size),
+            }));
+    return NULL;
+}
+
 const char *__collect_section_definitions(Bpf_Object *obj)
 {
     Elf64_Ehdr *elf_header = obj->elf;
@@ -268,6 +279,9 @@ const char *__collect_section_definitions(Bpf_Object *obj)
                                         return temp_sprintf("not enough space for overriding memory blob: %.*s", obj->overrides[z].name_size, obj->overrides[z].name);
                                     }
                                     memcpy(place, obj->overrides[z].value.memory.data, obj->overrides[z].value.memory.size);
+                                    break;
+                                case ok_map:
+                                    // do nothing; the maps are overriden in some other place
                                     break;
                                 default: 
                                     return temp_sprintf("unknown override kind encountered: %d", obj->overrides[z].kind);
@@ -570,9 +584,12 @@ const char *__process_maps_datasec(Bpf_Object *obj,
         struct btf_type *var = get_btf_type(obj, s->type);
         struct btf_type *map_type = get_btf_type(obj, var->type);
 
+        const char *map_name = strings + var->name_off;
+        // skip maps already in the cache; those maps were overriden
+        if (__find_map(obj, map_name)) continue;
+
 
         size_t member_count = BTF_INFO_VLEN(map_type->info);
-        const char *map_name = strings + var->name_off;
         struct btf_member *members = (struct btf_member *) (map_type+1);
 
         printf("map definition (%d): %s of name '%s'\n", s->offset, __btf_kind_name(BTF_INFO_KIND(map_type->info)), strings + map_type->name_off);
@@ -709,6 +726,7 @@ const char *loader_link_program(void *elf_file,
 
     const char *err = NULL;
     if (err = __check_elf_header(&obj))              return err;
+    if (err = __collect_map_overrides(&obj))   return err;
     if (err = __collect_section_definitions(&obj))   return err;
     if (err = __process_btf(&obj))                  return err;
     if (err = __process_relocations(&obj))           return err;

@@ -4,7 +4,8 @@ enum override_kind {
     ok_str = 1,
     ok_int = 2,
     ok_bool = 3,
-    ok_mem = 4
+    ok_mem = 4,
+    ok_map = 5
 };
 
 typedef struct {
@@ -16,6 +17,7 @@ typedef struct {
         const char *string;
         int integer;
         bool boolean;
+        int map_fd;
         struct {
             void *data;
             size_t size;
