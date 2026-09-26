@@ -7,6 +7,9 @@ import (
 	"github.com/MishimaPorte/ebpf-loader/loader"
 )
 
+// #include <linux/bpf.h>
+import "C"
+
 // int fd = syscall(__NR_bpf, BPF_PROG_LOAD, &attr, sizeof(attr));
 
 //go:embed ebpf/program.o
@@ -16,6 +19,7 @@ func main() {
 
 	progFd, err := loader.LoadProgram(
 		"GPL", ObjectFile,
+		C.BPF_PROG_TYPE_SCHED_CLS,
 		loader.OverrideInt("print_value", 10),
 		loader.OverrideString("print_string", "kek"),
 	)

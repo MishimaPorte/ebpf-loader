@@ -109,10 +109,11 @@ static char __log_buf[LOG_SIZE] = {0};
 
 int loader_load_bpf_program(const char *license,
                             void *prog,
-                            unsigned int prog_size)
+                            unsigned int prog_size,
+                            int prog_type)
 {
     union bpf_attr attr = {
-        .prog_type = BPF_PROG_TYPE_SCHED_CLS,
+        .prog_type = prog_type,
         .insns     = (uint64_t)prog,
         .insn_cnt  = prog_size,
         .license   = (uint64_t)license,

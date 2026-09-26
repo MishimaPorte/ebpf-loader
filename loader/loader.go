@@ -81,7 +81,7 @@ func OverrideMap(name string, mapFd int) Override {
 	return Override{override}
 }
 
-func LoadProgram(license string, elfFile []byte, overrides ...Override) (ProgramFd, error) {
+func LoadProgram(license string, elfFile []byte, programType int, overrides ...Override) (ProgramFd, error) {
 	sectionCstr := C.CString("tc")
 	defer C.free(unsafe.Pointer(sectionCstr))
 
@@ -103,7 +103,7 @@ func LoadProgram(license string, elfFile []byte, overrides ...Override) (Program
 
 	runtime.KeepAlive(overrides)
 
-	fd := C.loader_load_bpf_program(cstr, program, programSize)
+	fd := C.loader_load_bpf_program(cstr, program, programSize, C.int(programType))
 	if fd == -1 {
 		return 0, fmt.Errorf("bad ebpf program, could not load: %s", getLastError())
 	}

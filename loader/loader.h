@@ -27,7 +27,8 @@ typedef struct {
 
 int loader_load_bpf_program(const char *license,
                             void *prog,
-                            uint32_t prog_size);
+                            unsigned int prog_size,
+                            int prog_type);
 
 int loader_attach_program(int program_fd,
                           const char *interface_name);
