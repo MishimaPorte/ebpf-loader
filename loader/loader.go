@@ -141,6 +141,9 @@ func CreateAndPinOrGet(pinPath string, f func() (int, error)) (int, error) {
 	_, err := os.Stat(pinPath)
 	if err != nil && errors.Is(err, os.ErrNotExist) {
 		fd, err := f()
+		if err != nil {
+			return 0, err
+		}
 		err = PinObject(fd, pinPath)
 		if err != nil {
 			return 0, err
