@@ -3,7 +3,9 @@ package loader
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
+	"os"
 	"runtime"
 	"unsafe"
 )
@@ -133,6 +135,26 @@ func GetPinnedObject(path string) (fd int, err error) {
 	}
 
 	return int(cFd), nil
+}
+
+func CreateAndPinOrGet(pinPath string, f func() (int, error)) (int, error) {
+	_, err := os.Stat(pinPath)
+	if err != nil && errors.Is(err, os.ErrNotExist) {
+		fd, err := f()
+		err = PinObject(fd, pinPath)
+		if err != nil {
+			return 0, err
+		}
+		return fd, nil
+	} else if err != nil {
+		return 0, err
+	} else {
+		fd, err := GetPinnedObject(pinPath)
+		if err != nil {
+			return 0, err
+		}
+		return fd, nil
+	}
 }
 
 func AttachProgramToInterface(progFd ProgramFd, interfaceName string, attachType int) (LinkFd, error) {
