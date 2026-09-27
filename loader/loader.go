@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"syscall"
 	"unsafe"
 )
 
@@ -146,6 +147,7 @@ func CreateAndPinOrGet(pinPath string, f func() (int, error)) (int, error) {
 		}
 		err = PinObject(fd, pinPath)
 		if err != nil {
+			syscall.Close(fd)
 			return 0, err
 		}
 		return fd, nil
