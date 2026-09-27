@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"runtime"
+	"syscall"
 	"unsafe"
 )
 
@@ -109,6 +110,18 @@ func LoadProgram(license string, elfFile []byte, programType int, overrides ...O
 	}
 
 	return ProgramFd(fd), nil
+}
+
+func PinObject(fd int, path string) error {
+	cstr := C.CString(path)
+	defer C.free(unsafe.Pointer(cstr))
+
+	err = C.loader_pin_object(C.int(fd), cstr)
+	if err == -1 {
+		return syscall.Errno(C.get_errno())
+	}
+
+	return nil
 }
 
 func AttachProgramToInterface(progFd ProgramFd, interfaceName string, attachType int) (LinkFd, error) {
