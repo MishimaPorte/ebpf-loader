@@ -153,6 +153,14 @@ int loader_pin_object(int object_fd,
     return syscall(__NR_bpf, BPF_OBJ_PIN, &attr, sizeof attr);
 }
 
+int loader_get_pinned_object(const char *filename)
+{
+    union bpf_attr attr = {0};
+    attr.pathname = (uint64_t)filename;
+    
+    return syscall(__NR_bpf, BPF_OBJ_GET, &attr, sizeof attr);
+}
+
 //returms rodata's ebpf map fd
 int __create_rodata_map(void *data,
                         uint32_t data_len)

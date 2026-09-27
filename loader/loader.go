@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"runtime"
-	"syscall"
 	"unsafe"
 )
 
@@ -116,12 +115,24 @@ func PinObject(fd int, path string) error {
 	cstr := C.CString(path)
 	defer C.free(unsafe.Pointer(cstr))
 
-	err = C.loader_pin_object(C.int(fd), cstr)
+	err := C.loader_pin_object(C.int(fd), cstr)
 	if err == -1 {
-		return syscall.Errno(C.get_errno())
+		return fmt.Errorf("could not pin the object object: %s", C.loader_last_error())
 	}
 
 	return nil
+}
+
+func GetPinnedObject(path string) (fd int, err error) {
+	cstr := C.CString(path)
+	defer C.free(unsafe.Pointer(cstr))
+
+	cFd := C.loader_get_pinned_object(cstr)
+	if cFd < 0 {
+		return 0, fmt.Errorf("could not get the pinned object: %s", C.GoString(C.strerror(-C.int(cFd))))
+	}
+
+	return int(cFd), nil
 }
 
 func AttachProgramToInterface(progFd ProgramFd, interfaceName string, attachType int) (LinkFd, error) {

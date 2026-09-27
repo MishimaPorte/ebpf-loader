@@ -42,3 +42,7 @@ const char *loader_link_program(void *elf_file,
                                 uint32_t *out_program_size,
                                 global_override *overrides,
                                 size_t overrides_size);
+
+int loader_pin_object(int object_fd,
+                      const char *filename_to_pin);
+int loader_get_pinned_object(const char *filename);
